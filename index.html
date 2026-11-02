@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Home Control</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#121212">
+    <style>
+        body { font-family: sans-serif; background: #121212; color: #fff; padding: 20px; }
+        .log-box { background: #1e1e1e; padding: 15px; border-radius: 8px; margin-top: 10px; max-height: 350px; overflow-y: auto; font-family: monospace; }
+        input, button { padding: 10px; font-size: 16px; margin-top: 8px; border-radius: 5px; border: none; box-sizing: border-box; }
+        input { width: 100%; background: #2c2c2c; color: #fff; }
+        button { width: 100%; background: #4CAF50; color: white; cursor: pointer; }
+        .incoming { color: #4CAF50; }
+        .outgoing { color: #2196F3; }
+        #auth-screen { background: #1e1e1e; padding: 20px; border-radius: 8px; margin-top: 30px; text-align: center; }
+        #app-content { display: none; }
+        .send-group { display: flex; gap: 8px; }
+        .send-group input { width: 75%; }
+        .send-group button { width: 25%; }
+    </style>
+</head>
+<body>
+
+    <!-- Login-Screen: Topic & Passwort werden dynamisch abgefragt -->
+    <div id="auth-screen">
+        <h2>🔒 Anmelden</h2>
+        <input type="text" id="topicInput" placeholder="ntfy Topic-Name...">
+        <input type="password" id="passInput" placeholder="Geheimes Passwort...">
+        <button onclick="unlockApp()">Entsperren & Verbinden</button>
+    </div>
+
+    <!-- Hauptfenster (wird erst nach Eingabe sichtbar) -->
+    <div id="app-content">
+        <h2>🔒 Secure Home Control</h2>
+        <div class="send-group">
+            <input type="text" id="msgInput" placeholder="Befehl eingeben (z.B. test)..." onkeydown="if(event.key === 'Enter') encryptAndSend()">
+            <button onclick="encryptAndSend()">Senden</button>
+        </div>
+        <div class="log-box" id="log">Verbinde mit ntfy.sh Live-Stream...</div>
+    </div>
+
+    <script>
+        let activeTopic = "";
+        let secretPassword = "";
+
+        function unlockApp() {
+            let top = document.getElementById("topicInput").value.trim();
+            let pw = document.getElementById("passInput").value;
+            
+            if (!top || !pw) {
+                alert("Bitte Topic und Passwort eingeben!");
+                return;
+            }
+
+            activeTopic = top;
+            secretPassword = pw;
+
+            // UI umschalten
+            document.getElementById("auth-screen").style.display = "none";
+            document.getElementById("app-content").style.display = "block";
+
+            // PWA & Live-Stream starten
+            initApp();
+        }
+
+        function initApp() {
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('sw.js').catch(err => console.log('SW Fehler:', err));
+            }
+            if (Notification.permission !== "granted") {
+                Notification.requestPermission();
+            }
+
+            // Live-Stream mit dem eingegebenen Topic starten
+            const eventSource = new EventSource(`https://ntfy.sh/${activeTopic}/sse`);
+            
+            eventSource.onopen = function() {
+                document.getElementById("log").innerHTML += `<p style="color: #888;">✔ Mit Stream (${activeTopic}) verbunden.</p>`;
+            };
+
+            eventSource.onmessage = async function(event) {
+                const packet = JSON.parse(event.data);
+                if (packet.message) {
+                    let decryptedText = await decryptMessage(packet.message, secretPassword);
+                    
+                    if (decryptedText) {
+                        document.getElementById("log").innerHTML += `<p class="incoming"><b>Empfangen:</b> ${decryptedText}</p>`;
+                        document.getElementById("log").scrollTop = document.getElementById("log").scrollHeight;
+
+                        if (Notification.permission === "granted") {
+                            new Notification("🚨 Secure Home", { body: decryptedText });
+                        }
+
+                        let audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
+                        audio.play().catch(e => console.log("Audio blockiert"));
+                    }
+                }
+            };
+        }
+
+        async function decryptMessage(ciphertextBase64, password) {
+            try {
+                const rawData = Uint8Array.from(atob(ciphertextBase64), c => c.charCodeAt(0));
+                if (String.fromCharCode(...rawData.slice(0, 8)) !== 'Salted__') return null;
+                
+                const salt = rawData.slice(8, 16);
+                const ciphertext = rawData.slice(16);
+
+                const enc = new TextEncoder();
+                const keyMaterial = await window.crypto.subtle.importKey(
+                    "raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]
+                );
+                
+                const key = await window.crypto.subtle.deriveKey(
+                    { name: "PBKDF2", salt: salt, iterations: 10000, hash: "SHA-256" },
+                    keyMaterial, { name: "AES-CBC", length: 256 }, false, ["decrypt"]
+                );
+
+                const decrypted = await window.crypto.subtle.decrypt(
+                    { name: "AES-CBC", iv: new Uint8Array(16) }, key, ciphertext
+                );
+
+                return new TextDecoder().decode(decrypted);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        async function encryptMessage(text, password) {
+            const enc = new TextEncoder();
+            const salt = window.crypto.getRandomValues(new Uint8Array(8));
+            
+            const keyMaterial = await window.crypto.subtle.importKey(
+                "raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]
+            );
+            const key = await window.crypto.subtle.deriveKey(
+                { name: "PBKDF2", salt: salt, iterations: 10000, hash: "SHA-256" },
+                keyMaterial, { name: "AES-CBC", length: 256 }, false, ["encrypt"]
+            );
+
+            const encrypted = await window.crypto.subtle.encrypt(
+                { name: "AES-CBC", iv: new Uint8Array(16) }, key, enc.encode(text)
+            );
+
+            let saltedPrefix = new Uint8Array([83, 97, 108, 116, 101, 100, 95, 95]);
+            let combined = new Uint8Array(saltedPrefix.length + salt.length + encrypted.byteLength);
+            combined.set(saltedPrefix, 0);
+            combined.set(salt, saltedPrefix.length);
+            combined.set(new Uint8Array(encrypted), saltedPrefix.length + salt.length);
+
+            return btoa(String.fromCharCode(...combined));
+        }
+
+        async function encryptAndSend() {
+            let text = document.getElementById("msgInput").value;
+            if (!text || !activeTopic) return;
+
+            let ciphertext = await encryptMessage(text, secretPassword);
+
+            await fetch(`https://ntfy.sh/${activeTopic}`, {
+                method: "POST",
+                body: ciphertext
+            });
+
+            document.getElementById("log").innerHTML += `<p class="outgoing"><b>Gesendet:</b> ${text}</p>`;
+            document.getElementById("msgInput").value = "";
+            document.getElementById("log").scrollTop = document.getElementById("log").scrollHeight;
+        }
+    </script>
+</body>
+</html>
