@@ -1,14 +1,20 @@
 {
-  "name": "Secure Home Control",
-  "short_name": "HomeSecure",
-  "start_url": "index.html",
+  "name": "Meine Vollbild PWA",
+  "short_name": "VollbildApp",
+  "start_url": "./index.html",
+  "scope": "./",
   "display": "standalone",
-  "background_color": "#121212",
-  "theme_color": "#121212",
+  "background_color": "#1e293b",
+  "theme_color": "#1e293b",
   "icons": [
     {
-      "src": "icon.png",
+      "src": "villa_icon192.png",
       "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "villa_icon512.png",
+      "sizes": "512x512",
       "type": "image/png"
     }
   ]
